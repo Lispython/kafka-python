@@ -4,6 +4,7 @@ import copy
 import logging
 import socket
 from kafka.client_async import KafkaClient, selectors
+import kafka.errors as Errors
 from kafka.errors import (
     KafkaConfigurationError, UnsupportedVersionError, NodeNotReadyError, NotControllerError, KafkaConnectionError)
 from kafka.metrics import MetricConfig, Metrics
@@ -498,15 +499,49 @@ class KafkaAdmin(object):
     def list_consumer_groups(self):
         """List all consumer groups known to the cluster.
 
-        :return: Appropriate version of ListGroupsResponse class
+        This returns a list of Consumer Group tuples. The tuples are
+        composed of the consumer group name and the consumer group protocol
+        type.
+
+        Only consumer groups that store their offsets in Kafka are
+        returned. The protocol type will be an empty string for
+        groups created using Kafka < 0.9 APIs because, although they store
+        their offsets in Kafka, they don't use Kafka for group coordination.
+        For groups created using Kafka >= 0.9, the protocol type will typically
+        be "consumer".
+
+        As soon as any error is encountered, it is immediately raised.
+
+        :return list: List of tuples of Consumer Groups.
+        :exception GroupCoordinatorNotAvailableError: The coordinator is not
+            available, so cannot process requests.
+        :exception GroupLoadInProgressError: The coordinator is loading and
+            hence can't process requests.
         """
+        # While we return a list, internally use a set to prevent duplicates
+        # because if a group coordinator fails after being queried, and its
+        # consumer groups move to new brokers that haven't yet been queried,
+        # then the same group could be returned by multiple brokers.
+        consumer_groups = set()
         version = self._matching_api_version(ListGroupsRequest)
         if version <= 1:
             request = ListGroupsRequest[version]()
+            for broker in self._client.cluster.brokers():
+                response = self._send_request_to_node(broker.nodeId, request)
+                # TODO Is error checking even required? Or will this already be
+                # raised by _send_request_to_node()?
+                # If so, remove the exception list from the docstring
+                error_type = Errors.for_code(response.error_code)
+                if error_type is not Errors.NoError:
+                    raise error_type
+                # TODO create a namedtuple for consumer group responses and
+                # store it in kafka/structs.py... then convert the group tuples
+                # to that
+                consumer_groups.update(response.groups)
         else:
             raise UnsupportedVersionError(
                 "missing implementation of ListGroups for library supported version {}"
                     .format(version))
-        return self._send(request)
+        return list(consumer_groups)
 
     # delete groups protocol not implemented
