@@ -73,7 +73,7 @@ class AbstractSampledStat(AbstractMeasurableStat):
                 sample.reset(now)
 
     def _advance(self, config, time_ms):
-        self._current = (self._current + 1) % config.samples
+        self._current = (self._current + 1) % (config.samples,)
         if self._current >= len(self._samples):
             sample = self.new_sample(time_ms)
             self._samples.append(sample)
